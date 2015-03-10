@@ -42,4 +42,4 @@ This software is released under GNU GPLv2 license.
 ```
 
 ## Disclaimer
-I'm not in any way associated with HP or Snapfish and I do not own any right on them (*so please don't break snapfish using this software*).
+I'm not in any way associated with HP or Snapfish and I do not own any right to them (*so please don't break snapfish using this software*).
