@@ -11,17 +11,22 @@ import os
 import re
 import multiprocessing
 import logging
+import signal
+import sys
 
-PROTO = "https://"
-HOST = "www.snapfish.com"
-HOST3 = "www3.snapfish.com"
-PROTO_HOST = PROTO + HOST
-PROTO_HOST3 = PROTO + HOST3
 MIN_PROCESSES = 1
 MAX_PROCESSES = 10
 DEFAULT_PROCESSES = 5
 DEFAULT_VERBOSITY = 2
 DEFAULT_MODE = 'all'
+DEFAULT_POD = 3
+MIN_POD = 1
+MAX_POD = 5
+MIN_VERBOSITY = 1
+MAX_VERBOSITY = 5
+PROTO = "https://"
+HOST = "www.snapfish.com"
+PROTO_HOST = PROTO + HOST
 
 
 def list_work(queue):
@@ -46,21 +51,33 @@ def save_picture((session, url, path)):
 
 if __name__ == '__main__':
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Snapfish albums dumper.',
-                                     epilog='This software is released under GNU GPLv3 license.')
+    parser = argparse.ArgumentParser(description='Snapfish dumper.',
+                                     epilog='Example:\n'
+                                            './snapfishdumper.py --dir albums --save pictures mail@provider.com\n\n'
+                                            'This software is released under GNU GPLv2 license.',
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('username', metavar='username',
                         help='Snapfish login username/email')
     parser.add_argument('-p', '--password', metavar='password',
                         help='Snapfish account password. If omitted the password will be asked from stdin')
     parser.add_argument('-d', '--dir', metavar='download_dir', default=os.getcwd(),
-                        help='Where to save the albums. If omitted defaults to current_dir.')
+                        help='Where to save the albums.'
+                             'Default: current directory.')
     parser.add_argument('-c', '--concurrent', default=DEFAULT_PROCESSES,
-                        help='Sets the max. number of concurrent downloads (%i-%i). Default: %i' %
+                        help='Sets the max. number of concurrent downloads (%i-%i).'
+                             'Default: %i' %
                              (MIN_PROCESSES, MAX_PROCESSES, DEFAULT_PROCESSES))
-    parser.add_argument('-v', '--verbosity', default=DEFAULT_VERBOSITY,
-                        help='Sets the verbosity threshold (1-5, lower logs more). Default: %i' % (DEFAULT_VERBOSITY, ))
-    parser.add_argument('--save', choiches=['all', 'pictures', 'metadata'], dest='save', default=DEFAULT_MODE)
-    parser.set_defaults(save_metadata=True)
+    parser.add_argument('-v', '--verbosity', choices=range(MIN_VERBOSITY, MAX_VERBOSITY+1), default=DEFAULT_VERBOSITY,
+                        help='Sets the verbosity threshold (%i-%i, lower logs more).'
+                             'Default: %i' % (MIN_VERBOSITY, MAX_VERBOSITY, DEFAULT_VERBOSITY,))
+    parser.add_argument('-s', '--save', choices=['all', 'pictures', 'metadata'], dest='save', default=DEFAULT_MODE,
+                        help='Download everything, just pictures or just json metadata.'
+                             'Default: %s' % (DEFAULT_MODE,))
+    parser.add_argument('--pod', choices=range(MIN_POD, MAX_POD+1), type=int, default=DEFAULT_POD,
+                        help='Set the "pod" (server) that contains the user data. '
+                             'It should match the number that you see in the url '
+                             'after you log in on snapfish, eg. www3.snapfish.com => pod number 3.'
+                             'Default: %i (just because it works for me)' % (DEFAULT_POD,))
 
     args = parser.parse_args()
 
@@ -75,9 +92,11 @@ if __name__ == '__main__':
         log_level = logging.ERROR
     elif verbosity == 5:
         log_level = logging.CRITICAL
-    logging.basicConfig(level=log_level)
+    logging.basicConfig(level=logging.ERROR)
+    logger = logging.getLogger('snapfishdumper')
+    logger.setLevel(log_level)
 
-    logging.debug('Starting snapfish dumper')
+    logger.info('Starting snapfish dumper')
 
     username = args.username
 
@@ -99,22 +118,26 @@ if __name__ == '__main__':
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
     else:
-        logging.warning('The destination directory already exists')
+        logger.warning('The destination directory already exists')
 
     if args.save == 'all':
-        logging.info('Saving everything')
+        logger.info('Saving everything')
         save_metadata = True
         save_pictures = True
     elif args.save == 'metadata':
-        logging.info('Saving only metadata')
+        logger.info('Saving only metadata')
         save_metadata = True
         save_pictures = False
     else:
-        logging.info('Saving only the pictures')
+        logger.info('Saving only the pictures')
         save_metadata = False
         save_pictures = True
 
-    logging.debug('Performing authentication')
+    podnum = args.pod
+    PODHOST = "www" + str(podnum) + ".snapfish.com"
+    PROTO_PODHOST = PROTO + PODHOST
+
+    logger.debug('Performing authentication')
     session = requests.session()
     headers = {"Origin": PROTO_HOST,
                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) "
@@ -151,13 +174,16 @@ if __name__ == '__main__':
                    "session_cobrandOid": 1000}
     auth_header_2 = {"Referer": PROTO_HOST + "/snapfish/loginsubmit/fromTS=true/module=true/"
                                              "topWindowHost=www.snapfish.com/istws=true/pns/snapfish/welcome"}
-    auth_request_2 = session.post(PROTO_HOST3 + auth_url_2, data=auth_data_2, headers=auth_header_2)
+    auth_request_2 = session.post(PROTO_PODHOST + auth_url_2, data=auth_data_2, headers=auth_header_2)
 
-    # TODO: check if authentication was successful
+    if '"loggedIn":true' not in auth_request_2.text:
+        logger.critical('Cannot login. Please check your credentials and try to use a different pod.')
+        exit()
+    # TODO: use the appropriate pod (server) for the logged user
 
     # Get the list of the owned albums
     album_list_url = "/snapfish/fe/resources/{acct.albumListResourceUri}?accessLevel=owned"
-    album_list_request = session.get(PROTO_HOST3 + album_list_url)
+    album_list_request = session.get(PROTO_PODHOST + album_list_url)
     album_list_json = album_list_request.text
     albums = json.loads(album_list_json)['album']
 
@@ -165,23 +191,35 @@ if __name__ == '__main__':
         with open(save_dir + '/albums.json', 'w') as metadata_file:
             metadata_file.write(album_list_json.encode('utf8'))
 
-    logging.info('Got %i albums' % (len(albums),))
+    logger.info('Got %i albums' % (len(albums),))
+
+    # Instantiate a pool of processes and a signal handler for CTRL+C termination
+    # TODO: terminate the program instantly and consistently
+    pool = multiprocessing.Pool(processes=processes)
+
+    def signal_handler(signal, frame):
+        logger.error('CTRL+C pressed. Terminating...')
+        pool.close()
+        pool.terminate()
+        pool.join()
+        sys.exit(1)
+    signal.signal(signal.SIGINT, signal_handler)
 
     for album_number, album in enumerate(albums):
-        logging.info("Downloading album %i of %i: %s", album_number + 1,
-                     len(albums), album_details['albumInfo']['albumName'])
 
         album_details_params = {"getAlbumTags": "true",
                                 "getPicOids": "true",
                                 "sortOrder": "default",
                                 "fromIndex": "0",
                                 "itemCount": "1000"}
-        album_details_request = session.get(PROTO_HOST3 + "/snapfish/fe/resources/beapi/website/snapfish_us/acct/" +
+        album_details_request = session.get(PROTO_PODHOST + "/snapfish/fe/resources/beapi/website/snapfish_us/acct/" +
                                             str(album["ownerAcctOid"]) + "/album/" + str(album["albumOid"]) +
                                             "/granterId/" + str(album["ownerAcctOid"]) + "/albumDetail",
                                             params=album_details_params)
         album_details_json = album_details_request.text
         album_details = json.loads(album_details_json)
+        logger.info("Downloading album %i of %i: %s", album_number + 1,
+                    len(albums), album_details['albumInfo']['albumName'])
         album_pictures = album_details['userAssets']['userAsset']
 
         album_dir_name = re.sub('[^\\w_\\-\\. ]', '', album_details['albumInfo']['albumName'])
@@ -201,19 +239,20 @@ if __name__ == '__main__':
                 metadata_file.write(album_details_json.encode('utf8'))
 
         pictures_queue = multiprocessing.Queue()
-        for picture_number, picture in enumerate(album_pictures):
-            picture_filename = re.sub('[^\\w_\\-\\. ]', '', str(picture['pictOid']) + '.jpg')
-            # If the picture doesn't exist download it.
-            if not os.path.exists(save_dir + '/' + album_dir_name + '/' + picture_filename) and save_pictures:
-                pictures_queue.put((session,
-                                    PROTO_HOST3 + "/snapfish/savemovie/PictureID=" + str(picture['pictOid']) +
-                                    "_" + str(picture["ownerAcctOid"]),
-                                    save_dir + '/' + album_dir_name + '/' + picture_filename))
 
-        logging.info('Saving %i pictures (%i skipped)', pictures_queue.qsize(), len(album_pictures) - pictures_queue.qsize())
-        pool = multiprocessing.Pool(processes=processes)
+        if save_pictures:
+            for picture_number, picture in enumerate(album_pictures):
+                picture_filename = re.sub('[^\\w_\\-\\. ]', '', str(picture['pictOid']) + '.jpg')
+                # If the picture doesn't already exist download it.
+                if not os.path.exists(save_dir + '/' + album_dir_name + '/' + picture_filename):
+                    pictures_queue.put((session,
+                                        PROTO_PODHOST + "/snapfish/savemovie/PictureID=" + str(picture['pictOid']) +
+                                        "_" + str(picture["ownerAcctOid"]),
+                                        save_dir + '/' + album_dir_name + '/' + picture_filename))
+
+        logger.info('Saving %i pictures (%i skipped)', pictures_queue.qsize(), len(album_pictures) - pictures_queue.qsize())
         pool.map(save_picture, list_work(pictures_queue))
-        pool.close()
-        pool.join()
 
-    logging.info('Done!')
+    pool.close()
+    pool.join()
+    logger.info('Terminated.')
