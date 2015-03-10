@@ -2,7 +2,8 @@
 A simple Snapfish album dumper written in python.
 
 ## Usage
-'''
+```
+$ ./snapfishdumper.py --help
 usage: snapfishdumper.py [-h] [-p password] [-d download_dir] [-c CONCURRENT]
                          [-v {1,2,3,4,5}] [-s {all,pictures,metadata}]
                          [--pod {1,2,3,4,5}]
@@ -38,8 +39,7 @@ Example:
 ./snapfishdumper.py --dir albums --save pictures mail@provider.com
 
 This software is released under GNU GPLv2 license.
-
-'''
+```
 
 ## Disclaimer
 I'm not in any way associated with HP or Snapfish and I do not own any right on them (*so please don't break snapfish using this software*).
