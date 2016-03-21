@@ -1,3 +1,6 @@
+# DEPRECATED
+SnapfishDumper no longer works. Sorry!
+
 # SnapfishDumper
 A simple Snapfish album dumper written in python.
 
